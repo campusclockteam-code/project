@@ -1,0 +1,81 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  # Build and Packaging Flutter Android App
+  build-flutter-android:
+    name: Build Flutter Android App
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect Flutter Directory
+        id: detect
+        run: |
+          echo "==== Current Directory Tree (Diagnostic) ===="
+          find . -maxdepth 4 -not -path '*/.*' || ls -R
+          echo "============================================="
+
+          # Cleanly find any pubspec.yaml
+          pubspec_file=$(find . -name "pubspec.yaml" -print -quit)
+          if [ -n "$pubspec_file" ]; then
+            dir=$(dirname "$pubspec_file")
+            # Strip leading ./ if present
+            dir="${dir#./}"
+            echo "dir=$dir" >> $GITHUB_OUTPUT
+            echo "SUCCESS: Found pubspec.yaml inside directory: '$dir'"
+          else
+            echo "dir=." >> $GITHUB_OUTPUT
+            echo "ERROR: pubspec.yaml was not found anywhere in the repository. Defaulting to root."
+          fi
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Restore Firebase Google Services Config
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          TARGET_DIR="${{ steps.detect.outputs.dir }}/android/app"
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            mkdir -p "$TARGET_DIR"
+            printf '%s' "$GOOGLE_SERVICES_JSON" > "$TARGET_DIR/google-services.json"
+          else
+            echo "Warning: GOOGLE_SERVICES_JSON secret not found. Using default/fallback services config."
+          fi
+
+      - name: Install Flutter packages
+        working-directory: ${{ steps.detect.outputs.dir }}
+        run: flutter pub get
+
+      - name: Build Release APK
+        working-directory: ${{ steps.detect.outputs.dir }}
+        run: |
+          # Disable Gradle daemon for faster CI builds and stable memory footprint
+          flutter build apk --release --no-pub --dart-define=org.gradle.daemon=false
+
+      - name: Upload Release APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: campus-clock-slc-release-apk
+          path: ${{ steps.detect.outputs.dir }}/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: warn
+          retention-days: 30
+
